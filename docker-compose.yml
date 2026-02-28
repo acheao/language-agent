@@ -7,7 +7,7 @@ services:
       POSTGRES_PASSWORD: postgres
       POSTGRES_DB: language_agent
     ports:
-      - "5432:5432"
+      - "5431:5432"
     volumes:
       - postgres_data_agent:/var/lib/postgresql/data
       - ./postgres-init:/docker-entrypoint-initdb.d
@@ -25,7 +25,7 @@ services:
       dockerfile: Dockerfile
     container_name: language-agent-app
     ports:
-      - "8080:8080"
+      - "80:8080"
     depends_on:
       postgres:
         condition: service_healthy
