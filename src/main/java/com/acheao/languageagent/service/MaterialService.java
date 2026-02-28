@@ -39,8 +39,15 @@ public class MaterialService {
                 .collect(Collectors.toList());
 
         List<Material> savedMaterials = new ArrayList<>();
+        int skippedDuplicates = 0;
 
         for (String line : validLines) {
+            if (materialRepository.existsByContent(line)) {
+                log.info("Skipping duplicate material: {}", line);
+                skippedDuplicates++;
+                continue;
+            }
+
             Material material = new Material();
             material.setType(request.getType() != null ? request.getType() : "unknown");
             material.setContent(line);
@@ -55,8 +62,8 @@ public class MaterialService {
             materialStatsRepository.save(stats);
         }
 
-        log.info("Imported {} materials", savedMaterials.size());
-        return new ImportResult(request.getLines().size(), savedMaterials.size());
+        log.info("Imported {} materials, skipped {}", savedMaterials.size(), skippedDuplicates);
+        return new ImportResult(request.getLines().size(), savedMaterials.size(), skippedDuplicates);
     }
 
     public List<Material> getAllMaterials() {
@@ -74,10 +81,12 @@ public class MaterialService {
     public static class ImportResult {
         private final int totalProvided;
         private final int successfullyImported;
+        private final int skippedDuplicates;
 
-        public ImportResult(int totalProvided, int successfullyImported) {
+        public ImportResult(int totalProvided, int successfullyImported, int skippedDuplicates) {
             this.totalProvided = totalProvided;
             this.successfullyImported = successfullyImported;
+            this.skippedDuplicates = skippedDuplicates;
         }
 
         public int getTotalProvided() {
@@ -86,6 +95,10 @@ public class MaterialService {
 
         public int getSuccessfullyImported() {
             return successfullyImported;
+        }
+
+        public int getSkippedDuplicates() {
+            return skippedDuplicates;
         }
     }
 }
