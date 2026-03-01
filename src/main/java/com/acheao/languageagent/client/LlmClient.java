@@ -14,8 +14,11 @@ import reactor.util.retry.Retry;
 
 import java.time.Duration;
 import java.util.ArrayList;
+import java.util.LinkedHashSet;
 import java.util.List;
+import java.util.Locale;
 import java.util.Map;
+import java.util.Set;
 
 @Component
 public class LlmClient {
@@ -122,15 +125,100 @@ public class LlmClient {
         }
     }
 
+    public MaterialAutoParseResult analyzeAndSplitMaterialAuto(String rawContent) {
+        String source = rawContent == null ? "" : rawContent.trim();
+        if (source.isEmpty()) {
+            return new MaterialAutoParseResult("unknown", List.of(), "{}", deepseekModel);
+        }
+
+        String systemPrompt = """
+                You classify imported English learning material and split long sentence paragraphs.
+                Return JSON only:
+                {
+                  "type": "word|phrase|sentence",
+                  "segments": ["one item per material line"]
+                }
+                Rules:
+                1) type must be exactly one of word, phrase, sentence.
+                2) If input is one word, use type=word and return one segment.
+                3) If input is a phrase (not a complete sentence), use type=phrase and return one segment.
+                4) If input is a sentence or multi-sentence paragraph, use type=sentence.
+                5) For type=sentence and multi-sentence input, split into multiple complete English sentences in segments.
+                6) Keep original meaning and wording whenever possible, only trim spaces.
+                7) Do not output empty segments.
+                """;
+
+        String userPrompt = "Input material:\n" + source;
+
+        try {
+            String content = callJsonChatCompletion(
+                    deepseekModel,
+                    systemPrompt,
+                    userPrompt,
+                    "material auto classification");
+
+            MaterialAutoParseResult parsed = parseMaterialAutoParseResult(content, source);
+            return new MaterialAutoParseResult(parsed.getType(), parsed.getSegments(), content, deepseekModel);
+        } catch (Exception e) {
+            log.warn("Auto material classification failed, fallback to local inference. reason={}", e.getMessage());
+            String type = inferMaterialTypeLocally(source);
+            return new MaterialAutoParseResult(type, fallbackSegmentsByType(source, type), "{}", "local_fallback");
+        }
+    }
+
+    public QuestionGenerationResult generateQuestionFromWordOrPhrase(
+            String materialType,
+            String materialContent) {
+        String systemPrompt = """
+                You create one English sentence writing exercise from a word or phrase.
+                Return JSON only:
+                {
+                  "chinesePrompt": "Simplified Chinese meaning of the target sentence",
+                  "referenceSentence": "one complete English sentence",
+                  "difficulty": 2
+                }
+                Rules:
+                1) referenceSentence must be exactly one complete English sentence.
+                2) The sentence must naturally include the provided material.
+                3) chinesePrompt must match the meaning of referenceSentence and must be in Simplified Chinese only.
+                4) Keep the sentence short and practical for beginner/intermediate learners.
+                5) difficulty must be an integer from 1 to 5.
+                """;
+
+        String userPrompt = String.format(
+                "Material type: %s%nMaterial content: %s",
+                materialType == null ? "unknown" : materialType,
+                materialContent);
+
+        try {
+            String content = callJsonChatCompletion(
+                    deepseekModel,
+                    systemPrompt,
+                    userPrompt,
+                    "word-or-phrase question generation");
+            GeneratedQuestion parsedResponse = parseGeneratedQuestion(content);
+            validateGeneratedQuestion(parsedResponse);
+            return new QuestionGenerationResult(parsedResponse, content, deepseekModel);
+        } catch (LlmApiException e) {
+            throw e;
+        } catch (Exception e) {
+            log.error("Failed to generate word-or-phrase question: {}", e.getMessage(), e);
+            throw new LlmApiException("Failed to generate question from word or phrase via LLM", e);
+        }
+    }
+
     public TranslationResult translateEnglishToChinese(String englishSentence) {
         String systemPrompt = """
                 You are a translation engine.
                 Translate the English sentence to natural Simplified Chinese.
+                Do not explain.
+                Do not output the original English.
+                Keep the original meaning and style.
+                If the source sentence contains grammar mistakes, preserve that meaning and do not silently correct the intent.
                 Return JSON only:
                 {
                   "translation": "simplified Chinese translation"
                 }
-                Keep the original meaning accurate and complete.
                 """;
 
         String userPrompt = String.format("English sentence: %s", englishSentence);
@@ -141,16 +229,18 @@ public class LlmClient {
                     systemPrompt,
                     userPrompt,
                     "english-to-chinese translation");
-            String translation = extractTextFromContent(
+            String translation = normalizeExtractedText(extractTextFromContent(
                     content,
                     "",
                     "translation",
                     "translatedText",
                     "text",
                     "content",
-                    "output");
-            if (translation.isBlank()) {
-                throw new LlmApiException("Translated Chinese text is empty");
+                    "output"));
+
+            if (!isUsableChineseTranslation(translation)) {
+                String fallbackTranslation = fallbackTranslateByDeepSeek(englishSentence);
+                return new TranslationResult(fallbackTranslation, content, translationModel + " -> " + deepseekModel);
             }
             return new TranslationResult(translation, content, translationModel);
         } catch (LlmApiException e) {
@@ -161,47 +251,52 @@ public class LlmClient {
         }
     }
 
-    public QuestionGenerationResult generateErrorFocusedSentenceWritingQuestion(
+    public QuestionGenerationResult generateErrorFocusedQuestion(
             String materialType,
             String materialContent,
             String primaryErrorType,
-            String errorContext) {
+            String errorContext,
+            String exerciseType) {
         String systemPrompt = """
-                You generate one English sentence writing question targeted at a learner's weak error type.
+                You generate one targeted English practice question based on error type and requested exercise type.
                 Return JSON only:
                 {
                   "prompt": "question text",
-                  "referenceSentence": "one model English sentence",
+                  "referenceAnswer": "correct answer text",
                   "difficulty": 3
                 }
                 Rules:
-                1) Prompt must ask the learner to write exactly one English sentence.
-                2) The question should specifically train the given error type (for example grammar, tense, spelling, word choice).
-                3) Keep the sentence practical and clear.
-                4) Difficulty must be an integer from 1 to 5.
+                1) exerciseType can be: sentence_writing, fill_blank, correction.
+                2) If exerciseType=sentence_writing, prompt asks the learner to write exactly one English sentence.
+                3) If exerciseType=fill_blank, prompt includes one blank marked by ___.
+                4) If exerciseType=correction, prompt gives an incorrect sentence and asks the learner to correct it.
+                5) The question must specifically train the given error type (for example grammar, tense, spelling, collocation).
+                6) referenceAnswer must match the prompt format and be concise.
+                7) Difficulty must be an integer from 1 to 5.
                 """;
 
         String userPrompt = String.format(
-                "Material type: %s%nMaterial content: %s%nPrimary error type: %s%nError context: %s",
+                "Material type: %s%nMaterial content: %s%nPrimary error type: %s%nError context: %s%nExercise type: %s",
                 materialType == null ? "unknown" : materialType,
                 materialContent,
                 primaryErrorType == null ? "general" : primaryErrorType,
-                errorContext == null ? "none" : errorContext);
+                errorContext == null ? "none" : errorContext,
+                exerciseType == null ? "sentence_writing" : exerciseType);
 
         try {
             String content = callJsonChatCompletion(
                     deepseekModel,
                     systemPrompt,
                     userPrompt,
-                    "error-focused question generation");
+                    "error-focused exercise generation");
             GeneratedQuestion parsedResponse = parseGeneratedQuestion(content);
             validateGeneratedQuestion(parsedResponse);
             return new QuestionGenerationResult(parsedResponse, content, deepseekModel);
         } catch (LlmApiException e) {
             throw e;
         } catch (Exception e) {
-            log.error("Failed to generate error-focused question: {}", e.getMessage(), e);
-            throw new LlmApiException("Failed to generate error-focused question via LLM", e);
+            log.error("Failed to generate error-focused exercise: {}", e.getMessage(), e);
+            throw new LlmApiException("Failed to generate error-focused exercise via LLM", e);
         }
     }
 
@@ -276,6 +371,48 @@ public class LlmClient {
         }
     }
 
+    private MaterialAutoParseResult parseMaterialAutoParseResult(String content, String fallbackSource) throws Exception {
+        JsonNode root = objectMapper.readTree(content);
+        JsonNode objectNode = resolvePrimaryObjectNode(root);
+
+        String type = normalizeMaterialType(extractTextFromNode(
+                objectNode,
+                " ",
+                "type",
+                "materialType",
+                "kind",
+                "category"));
+
+        List<String> segments = extractTextArrayFromNode(
+                objectNode,
+                "segments",
+                "sentences",
+                "items",
+                "materials",
+                "lines");
+        segments = normalizeSegments(segments);
+
+        if (type.isBlank()) {
+            type = inferMaterialTypeLocally(fallbackSource);
+        }
+        if (segments.isEmpty()) {
+            segments = fallbackSegmentsByType(fallbackSource, type);
+        }
+
+        if ("sentence".equals(type) && segments.size() == 1 && looksLikeMultiSentence(segments.getFirst())) {
+            List<String> localSplit = splitIntoSentencesLocally(segments.getFirst());
+            if (localSplit.size() > 1) {
+                segments = localSplit;
+            }
+        }
+
+        if (!"sentence".equals(type) && !segments.isEmpty()) {
+            return new MaterialAutoParseResult(type, List.of(segments.getFirst()), content, deepseekModel);
+        }
+
+        return new MaterialAutoParseResult(type, segments, content, deepseekModel);
+    }
+
     private String cleanJsonContent(String content) {
         if (content.startsWith("```json")) {
             return content.replace("```json", "").replace("```", "").trim();
@@ -284,6 +421,34 @@ public class LlmClient {
             return content.replace("```", "").trim();
         }
         return content.trim();
+    }
+
+    private String fallbackTranslateByDeepSeek(String englishSentence) {
+        String fallbackSystemPrompt = """
+                Translate the input English sentence into Simplified Chinese.
+                Output only Simplified Chinese text.
+                Keep meaning aligned with the original sentence.
+                Do not output English.
+                """;
+        String fallbackUserPrompt = String.format("English sentence: %s", englishSentence);
+
+        String fallbackContent = callJsonChatCompletion(
+                deepseekModel,
+                fallbackSystemPrompt,
+                fallbackUserPrompt,
+                "fallback english-to-chinese translation");
+        String translated = normalizeExtractedText(extractTextFromContent(
+                fallbackContent,
+                "",
+                "translation",
+                "translatedText",
+                "text",
+                "content",
+                "output"));
+        if (!isUsableChineseTranslation(translated)) {
+            throw new LlmApiException("Fallback translation did not return usable Chinese text");
+        }
+        return translated;
     }
 
     private GeneratedQuestion parseGeneratedQuestion(String content) throws Exception {
@@ -296,10 +461,22 @@ public class LlmClient {
         JsonNode objectNode = resolvePrimaryObjectNode(root);
 
         GeneratedQuestion result = new GeneratedQuestion();
-        String prompt = extractTextFromNode(objectNode, " ", "prompt", "question", "task", "instruction", "content");
+        String prompt = extractTextFromNode(
+                objectNode,
+                " ",
+                "chinesePrompt",
+                "promptZh",
+                "prompt_zh",
+                "translation",
+                "prompt",
+                "question",
+                "task",
+                "instruction",
+                "content");
         String referenceSentence = extractTextFromNode(
                 objectNode,
                 " ",
+                "referenceAnswer",
                 "referenceSentence",
                 "answer",
                 "reference",
@@ -422,6 +599,28 @@ public class LlmClient {
         return text.substring(1, text.length() - 1).trim();
     }
 
+    private String normalizeExtractedText(String text) {
+        if (text == null) {
+            return "";
+        }
+        return text.replace("\r", " ").replace("\n", " ").trim();
+    }
+
+    private boolean isUsableChineseTranslation(String text) {
+        if (text == null) {
+            return false;
+        }
+        String normalized = text.trim();
+        if (normalized.isBlank()) {
+            return false;
+        }
+        if ("[]".equals(normalized) || "[ ]".equals(normalized) || "{}".equals(normalized)) {
+            return false;
+        }
+        // Require at least one CJK character to avoid English paraphrase leakage.
+        return normalized.codePoints().anyMatch(cp -> cp >= 0x4E00 && cp <= 0x9FFF);
+    }
+
     private String joinParts(List<String> parts, String delimiter) {
         if (parts == null || parts.isEmpty()) {
             return "";
@@ -430,6 +629,152 @@ public class LlmClient {
             return parts.getFirst();
         }
         return String.join(delimiter == null ? " " : delimiter, parts);
+    }
+
+    private List<String> extractTextArrayFromNode(JsonNode node, String... preferredFields) {
+        if (node == null || node.isNull()) {
+            return List.of();
+        }
+
+        List<String> values = new ArrayList<>();
+        if (node.isObject()) {
+            for (String field : preferredFields) {
+                JsonNode fieldNode = node.get(field);
+                if (fieldNode == null || fieldNode.isNull()) {
+                    continue;
+                }
+                if (fieldNode.isArray()) {
+                    for (JsonNode child : fieldNode) {
+                        String text = extractTextFromNode(child, " ", preferredFields);
+                        if (!text.isBlank()) {
+                            values.add(text);
+                        }
+                    }
+                    if (!values.isEmpty()) {
+                        return values;
+                    }
+                } else if (fieldNode.isTextual()) {
+                    String text = fieldNode.asText().trim();
+                    if (!text.isBlank()) {
+                        values.add(text);
+                        return values;
+                    }
+                }
+            }
+        }
+
+        String textFallback = extractTextFromNode(node, " ", preferredFields);
+        if (!textFallback.isBlank()) {
+            values.add(textFallback);
+        }
+        return values;
+    }
+
+    private List<String> normalizeSegments(List<String> rawSegments) {
+        if (rawSegments == null || rawSegments.isEmpty()) {
+            return List.of();
+        }
+
+        Set<String> dedup = new LinkedHashSet<>();
+        for (String raw : rawSegments) {
+            if (raw == null) {
+                continue;
+            }
+            String text = raw.replace("\r", " ").replace("\n", " ").trim();
+            if (text.isBlank()) {
+                continue;
+            }
+            dedup.add(text);
+        }
+        return new ArrayList<>(dedup);
+    }
+
+    private List<String> fallbackSegmentsByType(String source, String type) {
+        if (source == null || source.isBlank()) {
+            return List.of();
+        }
+
+        if (!"sentence".equals(type)) {
+            return List.of(source.trim());
+        }
+
+        List<String> parts = splitIntoSentencesLocally(source);
+        if (!parts.isEmpty()) {
+            return parts;
+        }
+        return List.of(source.trim());
+    }
+
+    private List<String> splitIntoSentencesLocally(String text) {
+        if (text == null || text.isBlank()) {
+            return List.of();
+        }
+
+        String normalized = text.trim().replaceAll("\\s+", " ");
+        String[] split = normalized.split("(?<=[.!?])\\s+");
+        List<String> result = new ArrayList<>();
+        for (String item : split) {
+            String sentence = item == null ? "" : item.trim();
+            if (!sentence.isBlank()) {
+                result.add(sentence);
+            }
+        }
+        return normalizeSegments(result);
+    }
+
+    private boolean looksLikeMultiSentence(String text) {
+        if (text == null || text.isBlank()) {
+            return false;
+        }
+        String normalized = text.trim();
+        int sentenceEndings = 0;
+        for (int i = 0; i < normalized.length(); i++) {
+            char ch = normalized.charAt(i);
+            if (ch == '.' || ch == '!' || ch == '?') {
+                sentenceEndings++;
+            }
+        }
+        return sentenceEndings >= 2;
+    }
+
+    private String inferMaterialTypeLocally(String source) {
+        if (source == null || source.isBlank()) {
+            return "unknown";
+        }
+
+        String normalized = source.trim();
+        long tokenCount = List.of(normalized.split("\\s+")).stream()
+                .filter(token -> !token.isBlank())
+                .count();
+        boolean hasSentenceEnd = normalized.matches(".*[.!?]$");
+
+        if (tokenCount <= 1) {
+            return "word";
+        }
+        if (tokenCount <= 4 && !hasSentenceEnd) {
+            return "phrase";
+        }
+        return "sentence";
+    }
+
+    private String normalizeMaterialType(String type) {
+        if (type == null || type.isBlank()) {
+            return "";
+        }
+        String normalized = type.trim().toLowerCase(Locale.ROOT);
+        if (normalized.contains("word")) {
+            return "word";
+        }
+        if (normalized.contains("phrase")) {
+            return "phrase";
+        }
+        if (normalized.contains("sentence") || normalized.contains("paragraph")) {
+            return "sentence";
+        }
+        if ("word".equals(normalized) || "phrase".equals(normalized) || "sentence".equals(normalized)) {
+            return normalized;
+        }
+        return "";
     }
 
     public static class GradingResult {
@@ -517,6 +862,36 @@ public class LlmClient {
 
         public GeneratedQuestion getResponse() {
             return response;
+        }
+
+        public String getRawResponse() {
+            return rawResponse;
+        }
+
+        public String getModel() {
+            return model;
+        }
+    }
+
+    public static class MaterialAutoParseResult {
+        private final String type;
+        private final List<String> segments;
+        private final String rawResponse;
+        private final String model;
+
+        public MaterialAutoParseResult(String type, List<String> segments, String rawResponse, String model) {
+            this.type = type;
+            this.segments = segments == null ? List.of() : segments;
+            this.rawResponse = rawResponse;
+            this.model = model;
+        }
+
+        public String getType() {
+            return type;
+        }
+
+        public List<String> getSegments() {
+            return segments;
         }
 
         public String getRawResponse() {

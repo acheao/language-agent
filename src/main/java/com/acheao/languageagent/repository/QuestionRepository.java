@@ -15,6 +15,9 @@ public interface QuestionRepository extends JpaRepository<Question, UUID> {
     List<Question> findBySessionId(UUID sessionId);
     boolean existsByMaterialId(UUID materialId);
 
+    @Query("SELECT DISTINCT q.materialId FROM Question q WHERE q.materialId IS NOT NULL AND q.createdAt >= :since")
+    List<UUID> findDistinctMaterialIdsSince(@Param("since") LocalDateTime since);
+
     @Query(value = """
             SELECT
                 q.id AS questionId,

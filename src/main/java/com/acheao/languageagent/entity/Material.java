@@ -30,6 +30,9 @@ public class Material {
     @Column(nullable = false)
     private boolean enabled;
 
+    @Column(name = "question_generated")
+    private Boolean questionGenerated;
+
     @CreationTimestamp
     @Column(name = "created_at", updatable = false)
     private LocalDateTime createdAt;
@@ -93,5 +96,17 @@ public class Material {
 
     public void setUpdatedAt(LocalDateTime updatedAt) {
         this.updatedAt = updatedAt;
+    }
+
+    public boolean isQuestionGenerated() {
+        return Boolean.TRUE.equals(questionGenerated);
+    }
+
+    public Boolean getQuestionGenerated() {
+        return questionGenerated;
+    }
+
+    public void setQuestionGenerated(Boolean questionGenerated) {
+        this.questionGenerated = questionGenerated;
     }
 }

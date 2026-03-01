@@ -4,12 +4,14 @@ import com.acheao.languageagent.client.LlmClient;
 import com.acheao.languageagent.entity.Material;
 import com.acheao.languageagent.entity.Question;
 import com.acheao.languageagent.exception.LlmApiException;
+import com.acheao.languageagent.repository.MaterialRepository;
 import com.acheao.languageagent.repository.QuestionRepository;
 import com.fasterxml.jackson.core.JsonProcessingException;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.springframework.stereotype.Service;
+import org.springframework.transaction.annotation.Transactional;
 
 import java.util.ArrayList;
 import java.util.Arrays;
@@ -25,14 +27,22 @@ public class QuestionService {
 
     private static final String TYPE_TRANSLATION_SENTENCE_WRITING = "translation_sentence_writing";
     private static final String TYPE_ERROR_TARGETED_SENTENCE_WRITING = "error_targeted_sentence_writing";
+    private static final String TYPE_ERROR_TARGETED_FILL_BLANK = "error_targeted_fill_blank";
+    private static final String TYPE_ERROR_TARGETED_CORRECTION = "error_targeted_correction";
     private static final String FALLBACK_MODEL = "fallback_template";
 
     private final QuestionRepository questionRepository;
+    private final MaterialRepository materialRepository;
     private final LlmClient llmClient;
     private final ObjectMapper objectMapper;
 
-    public QuestionService(QuestionRepository questionRepository, LlmClient llmClient, ObjectMapper objectMapper) {
+    public QuestionService(
+            QuestionRepository questionRepository,
+            MaterialRepository materialRepository,
+            LlmClient llmClient,
+            ObjectMapper objectMapper) {
         this.questionRepository = questionRepository;
+        this.materialRepository = materialRepository;
         this.llmClient = llmClient;
         this.objectMapper = objectMapper;
     }
@@ -43,16 +53,19 @@ public class QuestionService {
     }
 
     // New material mode:
-    // 1) sentence material -> translation model directly
-    // 2) phrase/word material -> deepseek simple sentence + translation model
+    // 1) sentence material -> translation model directly (material sentence is answer)
+    // 2) phrase/word material -> deepseek one-shot generates Chinese prompt + English answer
+    @Transactional
     public List<Question> generateNewQuestions(UUID sessionId, List<Material> materials, boolean translationOnly) {
         List<Question> questions = new ArrayList<>();
+        List<Material> generatedMaterials = new ArrayList<>();
 
         for (Material material : materials) {
             boolean firstGenerationForMaterial = !questionRepository.existsByMaterialId(material.getId());
 
             try {
                 questions.add(buildNewQuestionByRules(sessionId, material));
+                generatedMaterials.add(material);
             } catch (LlmApiException e) {
                 if (firstGenerationForMaterial) {
                     throw new LlmApiException(
@@ -64,6 +77,7 @@ public class QuestionService {
                         material.getId(), e.getMessage());
                 try {
                     questions.add(buildFallbackNewQuestion(sessionId, material));
+                    generatedMaterials.add(material);
                 } catch (JsonProcessingException jsonException) {
                     throw new IllegalStateException("Failed to serialize fallback new-question payload",
                             jsonException);
@@ -73,7 +87,9 @@ public class QuestionService {
             }
         }
 
-        return questionRepository.saveAll(questions);
+        List<Question> saved = questionRepository.saveAll(questions);
+        markMaterialsAsGenerated(generatedMaterials);
+        return saved;
     }
 
     public List<Question> regenerateWrongQuestions(UUID sessionId, List<WrongQuestionContext> contexts) {
@@ -138,16 +154,15 @@ public class QuestionService {
                     modelTrace);
         }
 
-        LlmClient.SimpleSentenceResult generatedSentence = llmClient.generateSimpleSentenceFromMaterial(
+        LlmClient.QuestionGenerationResult generatedQuestion = llmClient.generateQuestionFromWordOrPhrase(
                 material.getType(),
                 material.getContent());
-        answerSentence = normalizeSentence(generatedSentence.getSentence());
-        LlmClient.TranslationResult translationResult = llmClient.translateEnglishToChinese(answerSentence);
-        modelTrace = generatedSentence.getModel() + " -> " + translationResult.getModel();
+        answerSentence = normalizeSentence(generatedQuestion.getResponse().getReferenceSentence());
+        modelTrace = generatedQuestion.getModel();
         return buildTranslationQuestion(
                 sessionId,
                 material,
-                translationResult.getTranslation(),
+                generatedQuestion.getResponse().getPrompt(),
                 answerSentence,
                 modelTrace);
     }
@@ -174,19 +189,22 @@ public class QuestionService {
 
     private Question buildErrorTargetedQuestion(UUID sessionId, WrongQuestionContext context)
             throws JsonProcessingException {
-        LlmClient.QuestionGenerationResult llmResult = llmClient.generateErrorFocusedSentenceWritingQuestion(
+        ErrorExerciseType exerciseType = decideErrorExerciseType(context.getPrimaryErrorType());
+        LlmClient.QuestionGenerationResult llmResult = llmClient.generateErrorFocusedQuestion(
                 context.getMaterial().getType(),
                 context.getMaterial().getContent(),
                 context.getPrimaryErrorType(),
-                buildErrorContextText(context));
+                buildErrorContextText(context),
+                exerciseType.getPromptMode());
 
         Question question = new Question();
         question.setSessionId(sessionId);
         question.setMaterialId(context.getMaterial().getId());
-        question.setType(TYPE_ERROR_TARGETED_SENTENCE_WRITING);
+        question.setType(exerciseType.getQuestionType());
         question.setPrompt(llmResult.getResponse().getPrompt());
-        question.setReferenceAnswer(objectMapper.writeValueAsString(Map.of(
-                "text", normalizeSentence(llmResult.getResponse().getReferenceSentence()))));
+        question.setReferenceAnswer(objectMapper.writeValueAsString(Map.of("text",
+                normalizeAnswerText(llmResult.getResponse().getReferenceSentence(),
+                        buildFallbackReferenceByExerciseType(context.getMaterial(), exerciseType)))));
         question.setRubric(buildRubricJson());
         question.setDifficulty(llmResult.getResponse().getDifficulty());
         question.setTargetErrorTypes(context.getErrorTypes());
@@ -210,22 +228,19 @@ public class QuestionService {
 
     private Question buildFallbackWrongQuestion(UUID sessionId, WrongQuestionContext context)
             throws JsonProcessingException {
-        String prompt = String.format(
-                "Write one English sentence using this material and focus on %s: %s",
-                safe(context.getPrimaryErrorType(), "grammar"),
-                context.getMaterial().getContent());
+        ErrorExerciseType exerciseType = decideErrorExerciseType(context.getPrimaryErrorType());
+        String prompt = buildFallbackWrongPrompt(context, exerciseType);
 
-        String referenceSentence = context.getCorrectedAnswer();
-        if (referenceSentence == null || referenceSentence.isBlank()) {
-            referenceSentence = buildFallbackReferenceSentence(context.getMaterial());
-        }
+        String referenceSentence = normalizeAnswerText(
+                context.getCorrectedAnswer(),
+                buildFallbackReferenceByExerciseType(context.getMaterial(), exerciseType));
 
         Question question = new Question();
         question.setSessionId(sessionId);
         question.setMaterialId(context.getMaterial().getId());
-        question.setType(TYPE_ERROR_TARGETED_SENTENCE_WRITING);
+        question.setType(exerciseType.getQuestionType());
         question.setPrompt(prompt);
-        question.setReferenceAnswer(objectMapper.writeValueAsString(Map.of("text", normalizeSentence(referenceSentence))));
+        question.setReferenceAnswer(objectMapper.writeValueAsString(Map.of("text", referenceSentence)));
         question.setRubric(buildRubricJson());
         question.setDifficulty(3);
         question.setTargetErrorTypes(context.getErrorTypes());
@@ -252,6 +267,86 @@ public class QuestionService {
         }
 
         return normalizeSentence("I use " + content + " naturally in this sentence");
+    }
+
+    private String buildFallbackReferenceByExerciseType(Material material, ErrorExerciseType exerciseType) {
+        String content = safe(material == null ? null : material.getContent(), "the target expression");
+        return switch (exerciseType) {
+            case FILL_BLANK -> content;
+            case CORRECTION -> normalizeSentence("I can use " + content + " correctly in context");
+            case SENTENCE_WRITING -> buildFallbackReferenceSentence(material);
+        };
+    }
+
+    private String buildFallbackWrongPrompt(WrongQuestionContext context, ErrorExerciseType exerciseType) {
+        String materialContent = safe(context.getMaterial() == null ? null : context.getMaterial().getContent(), "");
+        String errorType = safe(context.getPrimaryErrorType(), "grammar");
+        return switch (exerciseType) {
+            case FILL_BLANK -> String.format(
+                    "Fill in the blank with the correct word or phrase (focus: %s): I ___ %s every day.",
+                    errorType,
+                    materialContent);
+            case CORRECTION -> String.format(
+                    "Correct the sentence (focus: %s): I use %s goodly in sentence.",
+                    errorType,
+                    materialContent);
+            case SENTENCE_WRITING -> String.format(
+                    "Write one English sentence using this material and focus on %s: %s",
+                    errorType,
+                    materialContent);
+        };
+    }
+
+    private ErrorExerciseType decideErrorExerciseType(String primaryErrorType) {
+        String normalized = normalizeErrorType(primaryErrorType);
+        if (normalized.contains("grammar")
+                || normalized.contains("tense")
+                || normalized.contains("agreement")
+                || normalized.contains("article")
+                || normalized.contains("preposition")
+                || normalized.contains("collocation")
+                || normalized.contains("fixed")) {
+            return ErrorExerciseType.FILL_BLANK;
+        }
+
+        if (normalized.contains("spelling")) {
+            return ErrorExerciseType.CORRECTION;
+        }
+
+        return ErrorExerciseType.SENTENCE_WRITING;
+    }
+
+    private String normalizeErrorType(String errorType) {
+        if (errorType == null) {
+            return "";
+        }
+        return errorType.trim().toLowerCase(Locale.ROOT);
+    }
+
+    private String normalizeAnswerText(String answer, String fallback) {
+        String normalized = answer == null ? "" : answer.trim();
+        if (normalized.isBlank()) {
+            return fallback;
+        }
+        return normalized;
+    }
+
+    private void markMaterialsAsGenerated(List<Material> materials) {
+        if (materials == null || materials.isEmpty()) {
+            return;
+        }
+
+        List<Material> toUpdate = materials.stream()
+                .filter(material -> material != null && !material.isQuestionGenerated())
+                .toList();
+        if (toUpdate.isEmpty()) {
+            return;
+        }
+
+        for (Material material : toUpdate) {
+            material.setQuestionGenerated(true);
+        }
+        materialRepository.saveAll(toUpdate);
     }
 
     private String buildErrorContextText(WrongQuestionContext context) {
@@ -309,6 +404,28 @@ public class QuestionService {
 
     private String safe(String value, String fallback) {
         return value == null || value.isBlank() ? fallback : value;
+    }
+
+    private enum ErrorExerciseType {
+        SENTENCE_WRITING(TYPE_ERROR_TARGETED_SENTENCE_WRITING, "sentence_writing"),
+        FILL_BLANK(TYPE_ERROR_TARGETED_FILL_BLANK, "fill_blank"),
+        CORRECTION(TYPE_ERROR_TARGETED_CORRECTION, "correction");
+
+        private final String questionType;
+        private final String promptMode;
+
+        ErrorExerciseType(String questionType, String promptMode) {
+            this.questionType = questionType;
+            this.promptMode = promptMode;
+        }
+
+        String getQuestionType() {
+            return questionType;
+        }
+
+        String getPromptMode() {
+            return promptMode;
+        }
     }
 
     public static class WrongQuestionContext {

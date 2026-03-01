@@ -16,10 +16,11 @@ public interface MaterialRepository extends JpaRepository<Material, UUID> {
     @Query("""
             SELECT m FROM Material m
             WHERE m.enabled = true
+            AND (m.questionGenerated IS NULL OR m.questionGenerated = false)
             AND NOT EXISTS (
                 SELECT 1 FROM Question q WHERE q.materialId = m.id
             )
             ORDER BY m.createdAt DESC
             """)
-    List<Material> findEnabledMaterialsWithoutQuestions(Pageable pageable);
+    List<Material> findEnabledMaterialsNotGenerated(Pageable pageable);
 }

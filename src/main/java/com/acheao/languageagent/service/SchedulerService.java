@@ -39,6 +39,6 @@ public class SchedulerService {
     }
 
     public List<Material> pickNewMaterials(int batchSize) {
-        return materialRepository.findEnabledMaterialsWithoutQuestions(PageRequest.of(0, batchSize));
+        return materialRepository.findEnabledMaterialsNotGenerated(PageRequest.of(0, batchSize));
     }
 }

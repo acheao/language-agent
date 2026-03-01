@@ -133,48 +133,67 @@ public class SessionService {
 
     private List<Question> generateReviewModeQuestions(UUID sessionId, int batchSize) {
         List<QuestionRepository.WrongAttemptProjection> attempts = questionRepository.findLatestWrongAttempts(
-                batchSize * 5);
+                Math.max(batchSize * 10, 30));
+        if (attempts.isEmpty()) {
+            return List.of();
+        }
 
-        Map<UUID, Question> uniqueWrongQuestions = new LinkedHashMap<>();
+        LocalDateTime now = LocalDateTime.now();
+        Map<UUID, QuestionRepository.WrongAttemptProjection> latestAttemptByQuestion = new LinkedHashMap<>();
         for (QuestionRepository.WrongAttemptProjection attempt : attempts) {
             UUID questionId = attempt.getQuestionId();
-            if (questionId == null || uniqueWrongQuestions.containsKey(questionId)) {
+            if (questionId == null || latestAttemptByQuestion.containsKey(questionId)) {
                 continue;
             }
+            latestAttemptByQuestion.put(questionId, attempt);
+        }
 
-            Question question = questionRepository.findById(questionId).orElse(null);
+        List<ReviewQuestionCandidate> candidates = new ArrayList<>();
+        for (Map.Entry<UUID, QuestionRepository.WrongAttemptProjection> entry : latestAttemptByQuestion.entrySet()) {
+            Question question = questionRepository.findById(entry.getKey()).orElse(null);
             if (question == null) {
                 continue;
             }
 
+            MaterialStats stats = null;
             UUID materialId = question.getMaterialId();
             if (materialId != null) {
                 Material material = materialRepository.findById(materialId).orElse(null);
                 if (material == null || !material.isEnabled()) {
                     continue;
                 }
+                stats = materialStatsRepository.findById(materialId).orElse(null);
             }
 
-            uniqueWrongQuestions.put(questionId, question);
-            if (uniqueWrongQuestions.size() >= batchSize) {
-                break;
-            }
+            double reviewValue = scoreReviewValue(entry.getValue(), stats, now);
+            candidates.add(new ReviewQuestionCandidate(question, reviewValue));
         }
 
-        return questionService.reuseWrongQuestions(sessionId, new ArrayList<>(uniqueWrongQuestions.values()));
+        List<Question> selected = candidates.stream()
+                .sorted(Comparator.comparingDouble(ReviewQuestionCandidate::score).reversed())
+                .limit(batchSize)
+                .map(ReviewQuestionCandidate::question)
+                .toList();
+        return questionService.reuseWrongQuestions(sessionId, selected);
     }
 
     private List<Question> generateSmartModeQuestions(UUID sessionId, int batchSize) {
         int poolSize = Math.max(batchSize * 8, 30);
         LocalDateTime now = LocalDateTime.now();
+        Set<UUID> recentlyUsedMaterialIds = new LinkedHashSet<>(
+                questionRepository.findDistinctMaterialIdsSince(now.minusHours(12)));
 
-        List<QuestionRepository.WrongAttemptProjection> wrongAttempts = questionRepository.findLatestWrongAttempts(poolSize);
+        List<QuestionRepository.WrongAttemptProjection> wrongAttempts = questionRepository.findLatestWrongAttempts(
+                poolSize);
         Map<UUID, QuestionRepository.WrongAttemptProjection> latestWrongByMaterial = buildLatestWrongAttemptByMaterial(
                 wrongAttempts);
 
         List<Material> dueMaterials = schedulerService.pickMaterials(Math.max(batchSize * 4, batchSize));
         List<Material> newMaterials = schedulerService.pickNewMaterials(Math.max(batchSize * 4, batchSize));
-        Map<UUID, Material> candidateMaterials = buildCandidateMaterialMap(dueMaterials, newMaterials, latestWrongByMaterial);
+        Map<UUID, Material> candidateMaterials = buildCandidateMaterialMap(
+                dueMaterials,
+                newMaterials,
+                latestWrongByMaterial);
         if (candidateMaterials.isEmpty()) {
             return List.of();
         }
@@ -186,12 +205,14 @@ public class SessionService {
 
         List<SmartCandidate> rankedCandidates = candidateMaterials.values().stream()
                 .map(material -> buildSmartCandidate(material, latestWrongByMaterial.get(material.getId()),
-                        statsByMaterial.get(material.getId()), errorTypePriority, now))
+                        statsByMaterial.get(material.getId()), errorTypePriority, recentlyUsedMaterialIds, now))
                 .sorted(Comparator.comparingDouble(SmartCandidate::score).reversed())
                 .toList();
 
+        List<SmartCandidate> distinctCandidates = deduplicateCandidatesByContent(rankedCandidates);
+
         List<Question> generatedQuestions = new ArrayList<>();
-        for (SmartCandidate candidate : rankedCandidates) {
+        for (SmartCandidate candidate : distinctCandidates) {
             if (generatedQuestions.size() >= batchSize) {
                 break;
             }
@@ -203,6 +224,18 @@ public class SessionService {
         }
 
         return generatedQuestions;
+    }
+
+    private List<SmartCandidate> deduplicateCandidatesByContent(List<SmartCandidate> rankedCandidates) {
+        Map<String, SmartCandidate> uniqueByContent = new LinkedHashMap<>();
+        for (SmartCandidate candidate : rankedCandidates) {
+            String signature = normalizeContent(candidate.material().getContent());
+            if (signature.isBlank()) {
+                continue;
+            }
+            uniqueByContent.putIfAbsent(signature, candidate);
+        }
+        return new ArrayList<>(uniqueByContent.values());
     }
 
     private Map<UUID, QuestionRepository.WrongAttemptProjection> buildLatestWrongAttemptByMaterial(
@@ -225,12 +258,12 @@ public class SessionService {
         Map<UUID, Material> candidates = new LinkedHashMap<>();
 
         for (Material material : dueMaterials) {
-            if (material != null && material.isEnabled()) {
+            if (material != null && material.isEnabled() && hasUsableMaterialContent(material)) {
                 candidates.put(material.getId(), material);
             }
         }
         for (Material material : newMaterials) {
-            if (material != null && material.isEnabled()) {
+            if (material != null && material.isEnabled() && hasUsableMaterialContent(material)) {
                 candidates.put(material.getId(), material);
             }
         }
@@ -239,7 +272,7 @@ public class SessionService {
         missingIds.removeAll(candidates.keySet());
         if (!missingIds.isEmpty()) {
             for (Material material : materialRepository.findAllById(missingIds)) {
-                if (material.isEnabled()) {
+                if (material.isEnabled() && hasUsableMaterialContent(material)) {
                     candidates.put(material.getId(), material);
                 }
             }
@@ -253,13 +286,21 @@ public class SessionService {
             QuestionRepository.WrongAttemptProjection latestWrong,
             MaterialStats stats,
             Map<String, Integer> errorTypePriority,
+            Set<UUID> recentlyUsedMaterialIds,
             LocalDateTime now) {
         List<String> parsedErrorTypes = latestWrong == null
                 ? List.of()
                 : parseErrorTypes(latestWrong.getErrorTypes());
         String primaryErrorType = pickPrimaryErrorType(parsedErrorTypes, errorTypePriority);
         SmartQuestionStrategy strategy = decideSmartStrategy(latestWrong, now);
-        double score = computeSmartScore(stats, latestWrong, primaryErrorType, errorTypePriority, now);
+        double score = computeSmartScore(
+                material.getId(),
+                stats,
+                latestWrong,
+                primaryErrorType,
+                errorTypePriority,
+                recentlyUsedMaterialIds,
+                now);
 
         QuestionService.WrongQuestionContext wrongContext = null;
         if (latestWrong != null) {
@@ -310,10 +351,12 @@ public class SessionService {
     }
 
     private double computeSmartScore(
+            UUID materialId,
             MaterialStats stats,
             QuestionRepository.WrongAttemptProjection latestWrong,
             String primaryErrorType,
             Map<String, Integer> errorTypePriority,
+            Set<UUID> recentlyUsedMaterialIds,
             LocalDateTime now) {
         int practiceCount = stats == null ? 0 : stats.getPracticeCount();
         int correctCount = stats == null ? 0 : stats.getCorrectCount();
@@ -328,6 +371,47 @@ public class SessionService {
         score += 1.1 * errorTypePriorityScore(primaryErrorType, errorTypePriority);
         score += newMaterialBoost(stats);
         score += recentWrongBoost(latestWrong, now);
+        score += recentQuestionPenalty(materialId, recentlyUsedMaterialIds);
+
+        return score;
+    }
+
+    private double scoreReviewValue(
+            QuestionRepository.WrongAttemptProjection wrongAttempt,
+            MaterialStats stats,
+            LocalDateTime now) {
+        double score = 0.0;
+
+        if (stats == null || stats.getLastPracticedAt() == null) {
+            score += 1.0;
+        } else {
+            double hoursSincePractice = Math.max(0.0, Duration.between(stats.getLastPracticedAt(), now).toHours());
+            if (hoursSincePractice < 2) {
+                score -= 1.4;
+            } else {
+                score += Math.min(hoursSincePractice / 24.0, 2.0);
+            }
+        }
+
+        if (stats == null || stats.getNextReviewAt() == null) {
+            score += 0.5;
+        } else if (!stats.getNextReviewAt().isAfter(now)) {
+            score += 1.6;
+        } else {
+            double hoursUntilDue = Math.max(0.0, Duration.between(now, stats.getNextReviewAt()).toHours());
+            score += Math.max(0.0, 1.0 - (hoursUntilDue / 48.0));
+        }
+
+        if (wrongAttempt != null && wrongAttempt.getWrongAt() != null) {
+            double hoursSinceWrong = Math.max(0.0, Duration.between(wrongAttempt.getWrongAt(), now).toHours());
+            if (hoursSinceWrong < 8) {
+                score += 0.3;
+            } else if (hoursSinceWrong <= 72) {
+                score += 1.0;
+            } else {
+                score += 0.6;
+            }
+        }
 
         return score;
     }
@@ -376,6 +460,13 @@ public class SessionService {
             return 0.9;
         }
         return 0.6;
+    }
+
+    private double recentQuestionPenalty(UUID materialId, Set<UUID> recentlyUsedMaterialIds) {
+        if (materialId == null) {
+            return 0.0;
+        }
+        return recentlyUsedMaterialIds.contains(materialId) ? -1.6 : 0.0;
     }
 
     private SmartQuestionStrategy decideSmartStrategy(
@@ -476,6 +567,17 @@ public class SessionService {
         return errorType.trim().toLowerCase(Locale.ROOT);
     }
 
+    private boolean hasUsableMaterialContent(Material material) {
+        return !normalizeContent(material.getContent()).isBlank();
+    }
+
+    private String normalizeContent(String content) {
+        if (content == null) {
+            return "";
+        }
+        return content.trim().replaceAll("\\s+", " ").toLowerCase(Locale.ROOT);
+    }
+
     private enum Mode {
         NEW,
         WRONG,
@@ -542,6 +644,11 @@ public class SessionService {
             SmartQuestionStrategy strategy,
             QuestionService.WrongQuestionContext wrongContext,
             UUID sourceQuestionId) {
+    }
+
+    private record ReviewQuestionCandidate(
+            Question question,
+            double score) {
     }
 
     public static class SessionResult {
