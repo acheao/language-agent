@@ -2,7 +2,7 @@ package com.acheao.languageagent.dto;
 
 public class SessionCreateRequest {
     private int batchSize = 10;
-    private String generatorMode = "hybrid";
+    private String generatorMode = "new";
 
     public int getBatchSize() {
         return batchSize;

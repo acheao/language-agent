@@ -4,6 +4,7 @@ import com.acheao.languageagent.entity.Material;
 import com.acheao.languageagent.entity.MaterialStats;
 import com.acheao.languageagent.repository.MaterialRepository;
 import com.acheao.languageagent.repository.MaterialStatsRepository;
+import org.springframework.data.domain.PageRequest;
 import org.springframework.stereotype.Service;
 
 import java.time.LocalDateTime;
@@ -35,5 +36,9 @@ public class SchedulerService {
                 .map(stats -> materialRepository.findById(stats.getMaterialId()).orElse(null))
                 .filter(m -> m != null)
                 .collect(Collectors.toList());
+    }
+
+    public List<Material> pickNewMaterials(int batchSize) {
+        return materialRepository.findEnabledMaterialsWithoutQuestions(PageRequest.of(0, batchSize));
     }
 }

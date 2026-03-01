@@ -14,6 +14,7 @@ import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
 
 import java.time.LocalDateTime;
+import java.util.List;
 
 @Service
 public class GradingService {
@@ -48,10 +49,18 @@ public class GradingService {
         grading.setRawLlmResponse(llmResult.getRawResponse());
 
         try {
-            grading.setErrorTypes(objectMapper.writeValueAsString(llmResult.getResponse().getErrorTypes()));
-            grading.setSuggestions(objectMapper.writeValueAsString(llmResult.getResponse().getSuggestions()));
+            List<String> errorTypes = llmResult.getResponse().getErrorTypes() == null
+                    ? List.of()
+                    : llmResult.getResponse().getErrorTypes();
+            List<String> suggestions = llmResult.getResponse().getSuggestions() == null
+                    ? List.of()
+                    : llmResult.getResponse().getSuggestions();
+
+            grading.setErrorTypes(objectMapper.writeValueAsString(errorTypes));
+            grading.setSuggestions(objectMapper.writeValueAsString(suggestions));
         } catch (JsonProcessingException e) {
-            // Ignore serialization errors in MVP
+            grading.setErrorTypes("[]");
+            grading.setSuggestions("[]");
         }
 
         Grading savedGrading = gradingRepository.save(grading);
