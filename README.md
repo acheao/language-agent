@@ -137,7 +137,7 @@ llm:
   base-url: https://api.openai.com
 ```
 
-For open-source use, do not commit a real key. Set `LLM_API_KEY` through environment variables or a local `.env` file during deployment.
+For open-source use, do not commit real secrets. Set `LLM_API_KEY` and `JWT_SECRET` through environment variables or a local `.env` file during deployment.
 
 You can switch between different providers without changing business logic.
 
