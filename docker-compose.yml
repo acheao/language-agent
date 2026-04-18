@@ -36,6 +36,11 @@ services:
       - JWT_SECRET=${JWT_SECRET:}
       - JWT_EXPIRATION_MS=${JWT_EXPIRATION_MS:-86400000}
       - SETTINGS_ENCRYPTION_KEY=${SETTINGS_ENCRYPTION_KEY:}
+      - LLM_BASE_URL=${LLM_BASE_URL:-https://api.siliconflow.cn/v1}
+      - LLM_API_KEY=${LLM_API_KEY:}
+      - LLM_MODEL=${LLM_MODEL:-Pro/deepseek-ai/DeepSeek-V3}
+      - LLM_DEEPSEEK_MODEL=${LLM_DEEPSEEK_MODEL:-${LLM_MODEL:-Pro/deepseek-ai/DeepSeek-V3}}
+      - LLM_TRANSLATION_MODEL=${LLM_TRANSLATION_MODEL:-tencent/Hunyuan-MT-7B}
       - MEDIA_STORAGE_ROOT=${MEDIA_STORAGE_ROOT:-/app/data/media}
       - YTDLP_BIN=${YTDLP_BIN:-yt-dlp}
       - ASR_SERVICE_URL=${ASR_SERVICE_URL:-}

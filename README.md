@@ -1,210 +1,169 @@
-# English Trainer Backend
+# Language Agent Backend
 
-This is the backend service for **English Trainer**, an AI-powered system designed to help users improve English writing skills through smart correction and personalized practice.
+`language-agent` is the backend service for the English Trainer product. It is not just a grading API. It is the business engine behind authentication, model configuration, material ingestion, daily planning, adaptive practice, grading, and progress analytics.
 
----
+The paired frontend repository lives at `C:\Users\Lin Chao\Documents\work\english-trainer-web`.
 
-## Project Overview
+## Product Responsibilities
 
-The goal of this project is to build an intelligent learning platform that:
+This backend supports the following user journey:
 
-* Corrects English sentences using Large Language Models (LLMs)
-* Identifies and classifies writing errors
-* Tracks user progress over time
-* Generates personalized exercises based on past mistakes
-* Provides REST APIs for frontend applications
+1. Users register and sign in.
+2. Users configure one or more LLM providers and choose a default model.
+3. Users import YouTube URLs, article URLs, or plain text as learning materials.
+4. The backend stores lessons, extracts or downloads content, and creates study units.
+5. The system generates a focused daily practice plan, usually around 30 minutes.
+6. The system grades answers, records error types and behavior signals, and uses that data to improve future sessions.
 
----
+## Core Capabilities
 
-## Key Features
+### Authentication
 
-* Automatic grammar and writing correction
-* Error type classification (grammar, tense, spelling, collocation, etc.)
-* Learning history storage
-* Adaptive exercise generation
-* Support for multiple LLM providers (OpenAI, DeepSeek, Qwen, etc.)
+- `POST /api/auth/register`
+- `POST /api/auth/login`
+- `GET /api/auth/me`
+- `PATCH /api/auth/profile`
 
----
+### LLM Settings
+
+Users can manage per-user model configurations instead of relying on a single deployment-wide API key.
+
+- `GET /api/settings/llm`
+- `GET /api/settings/llm/providers`
+- `POST /api/settings/llm`
+- `PATCH /api/settings/llm/{id}`
+- `DELETE /api/settings/llm/{id}`
+- `POST /api/settings/llm/{id}/test`
+
+The built-in provider catalog currently includes:
+
+- OpenAI / ChatGPT
+- Codex
+- DeepSeek
+- Qwen
+- Gemini
+- Kimi
+- GLM
+- Grok
+- MiniMax
+
+### Material Import
+
+- `POST /api/import/text`
+- `POST /api/import/article`
+- `POST /api/import/youtube`
+
+Behavior by source type:
+
+- YouTube import downloads English subtitles and mp3 files when available
+- Article import extracts readable body text
+- Text import splits learner-provided content into practice-ready study units
+
+### Lessons and Study Units
+
+- `GET /api/lessons`
+- `GET /api/lessons/{id}`
+- `GET /api/lessons/{id}/media`
+- `PATCH /api/study-units/{id}`
+
+### Daily Plan
+
+- `GET /api/daily-plan/today`
+
+The daily planner ranks study units using signals such as:
+
+- due review status
+- weak mastery
+- new material exposure
+- previous skips
+- uncertainty
+- recent duration and difficulty
+
+### Practice
+
+- `POST /api/practice/sessions`
+- `GET /api/practice/sessions/{id}`
+- `POST /api/practice/answers`
+
+The backend records:
+
+- duration
+- hint usage
+- skip behavior
+- uncertainty
+- score
+- feedback
+- error types
+
+### Stats
+
+- `GET /api/stats/overview`
+- `GET /api/stats/error-types?range=7d|30d`
+
+## Domain Model
+
+The current business model is centered on adaptive learning rather than a static question bank:
+
+- `Lesson`
+- `StudyUnit`
+- `DailyPlan`
+- `PracticeSession`
+- `PracticeTask`
+- `PracticeSubmission`
+- `BehaviorEvent`
+- `UserLlmConfig`
 
 ## Tech Stack
 
-* **Language:** Java
-* **Framework:** Spring Boot
-* **Database:** MySQL / PostgreSQL
-* **HTTP Client:** RestTemplate / WebClient
-* **Architecture:** RESTful API
-* **Deployment:** Docker (optional)
-
----
-
-## System Architecture
-
-```
-Frontend (React / Mobile App)
-        ↓
-Backend API (Spring Boot)
-        ↓
-LLM Provider (OpenAI / DeepSeek / Qwen)
-        ↓
-Database
-```
-
----
-
-## Core Modules
-
-### 1. Correction Module
-
-* Receives user-written English text
-* Sends it to an LLM for evaluation
-* Returns structured correction results
-
-Example response:
-
-```json
-{
-  "original": "She go to school yesterday.",
-  "corrected": "She went to school yesterday.",
-  "errorTypes": ["tense"]
-}
-```
-
----
-
-### 2. Error Tracking
-
-The system records:
-
-* User writing history
-* Frequent error types
-* Repeated vocabulary issues
-* Accuracy statistics
-* Practice timestamps
-
-This data is used to improve future learning efficiency.
-
----
-
-### 3. Personalized Exercise Generation
-
-New practice tasks are generated based on:
-
-* Recent error patterns
-* Vocabulary difficulty
-* Spaced repetition principles
-* User performance history
-
----
-
-## API Examples
-
-### Sentence Correction
-
-**POST** `/api/correct`
-
-Request:
-
-```json
-{
-  "text": "He don't like apples."
-}
-```
-
-Response:
-
-```json
-{
-  "corrected": "He doesn't like apples.",
-  "errors": [
-    {
-      "type": "grammar",
-      "message": "Subject-verb agreement error"
-    }
-  ]
-}
-```
-
----
+- Java 21
+- Spring Boot
+- Spring Security
+- Spring Data JPA
+- PostgreSQL
+- Docker / Docker Compose
+- `yt-dlp` for YouTube ingestion
 
 ## Configuration
 
-LLM provider configuration can be set in `application.yml`:
+Use `.env` for deployment-specific values. See `.env.example`.
 
-```yaml
-llm:
-  provider: openai
-  api-key: your_api_key_here
-  base-url: https://api.openai.com
+Important environment variables:
+
+- `APP_PORT`
+- `POSTGRES_PORT`
+- `CORS_ALLOWED_ORIGINS`
+- `JWT_SECRET`
+- `SETTINGS_ENCRYPTION_KEY`
+- `MEDIA_STORAGE_ROOT`
+- `YTDLP_BIN`
+- `ASR_SERVICE_URL`
+
+## Run Locally
+
+### Docker
+
+```bash
+docker compose up -d --build
 ```
 
-For open-source use, do not commit real secrets. Set `LLM_API_KEY` and `JWT_SECRET` through environment variables or a local `.env` file during deployment.
+### Maven
 
-You can switch between different providers without changing business logic.
-
----
-
-## Getting Started
-
-### 1. Clone the repository
-
-```
-git clone <repository-url>
-cd english-trainer-backend
+```bash
+mvn spring-boot:run
 ```
 
-### 2. Configure the database
+Default backend URL:
 
-Update `application.yml`:
-
-```yaml
-spring:
-  datasource:
-    url: jdbc:mysql://localhost:3306/english_trainer
-    username: root
-    password: password
-```
-
-### 3. Run the application
-
-```
-./mvnw spring-boot:run
-```
-
-The service will be available at:
-
-```
+```text
 http://localhost:8080
 ```
 
----
+## Current Refactor Focus
 
-## Roadmap
+The current refactor aims to make the backend serve a more coherent product:
 
-### Completed
-
-* Basic backend framework
-* LLM integration module
-* Simple correction API
-
-### In Progress
-
-* Error statistics module
-* Personalized exercise logic
-* Frontend integration
-
-### Future Plans
-
-* Multi-model comparison
-* Offline/local model support
-* Mobile app integration
-* Advanced spaced repetition algorithm
-
----
-
-## Contribution
-
-Contributions, suggestions, and bug reports are welcome.
-
-Feel free to open an issue or submit a pull request.
-
----
+- learner-owned material library
+- multi-provider model configuration
+- 30-minute daily adaptive practice
+- better persistence of errors, time, hesitation, and skip signals
+- tighter contract with the frontend flow

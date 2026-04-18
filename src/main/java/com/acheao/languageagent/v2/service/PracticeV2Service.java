@@ -342,7 +342,9 @@ public class PracticeV2Service {
         boolean correct = response.path("correct").asBoolean(score >= 85);
         List<String> errorTypes = new ArrayList<>();
         if (response.path("errorTypes").isArray()) {
-            response.path("errorTypes").forEach(item -> errorTypes.add(item.asText()));
+            for (JsonNode item : response.path("errorTypes")) {
+                errorTypes.add(item.asText());
+            }
         }
         errorTypes = ErrorTypeCatalog.normalizeAll(errorTypes);
         if (errorTypes.isEmpty() && !correct) {

@@ -16,7 +16,10 @@ import org.springframework.http.MediaType;
 import org.springframework.security.crypto.password.PasswordEncoder;
 import org.springframework.test.web.servlet.MockMvc;
 import org.springframework.test.web.servlet.MvcResult;
+import org.springframework.test.util.ReflectionTestUtils;
 
+import static org.junit.jupiter.api.Assertions.assertEquals;
+import static org.junit.jupiter.api.Assertions.assertNotNull;
 import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.get;
 import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.patch;
 import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.post;
@@ -62,6 +65,10 @@ class AuthControllerTest {
                 .andExpect(jsonPath("$.data.user.email").value("test@example.com"))
                 .andExpect(jsonPath("$.data.user.displayName").value("Test User"))
                 .andExpect(jsonPath("$.data.user.dailyGoalMinutes").value(30));
+
+        User saved = userRepository.findByEmail("test@example.com").orElseThrow();
+        assertNotNull(saved.getId());
+        assertEquals("test@example.com", ReflectionTestUtils.getField(saved, "username"));
     }
 
     @Test

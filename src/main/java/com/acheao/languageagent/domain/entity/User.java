@@ -5,6 +5,8 @@ import jakarta.persistence.Entity;
 import jakarta.persistence.GeneratedValue;
 import jakarta.persistence.GenerationType;
 import jakarta.persistence.Id;
+import jakarta.persistence.PrePersist;
+import jakarta.persistence.PreUpdate;
 import jakarta.persistence.Table;
 import org.hibernate.annotations.CreationTimestamp;
 import org.hibernate.annotations.UpdateTimestamp;
@@ -26,6 +28,10 @@ public class User implements UserDetails {
 
     @Column(unique = true, nullable = false, length = 120)
     private String email;
+
+    // Keep the legacy username column populated for existing deployed databases.
+    @Column(name = "username", unique = true, nullable = false, length = 120)
+    private String username;
 
     @Column(length = 80)
     private String displayName;
@@ -50,7 +56,7 @@ public class User implements UserDetails {
     }
 
     public User(String email, String displayName, String password) {
-        this.email = email;
+        setEmail(email);
         this.displayName = displayName;
         this.password = password;
     }
@@ -68,7 +74,10 @@ public class User implements UserDetails {
     }
 
     public void setEmail(String email) {
-        this.email = email;
+        this.email = normalizeIdentifier(email);
+        if (this.username == null || this.username.isBlank()) {
+            this.username = this.email;
+        }
     }
 
     public String getDisplayName() {
@@ -115,6 +124,17 @@ public class User implements UserDetails {
         this.updatedAt = updatedAt;
     }
 
+    @PrePersist
+    @PreUpdate
+    void syncLegacyUsernameColumn() {
+        email = normalizeIdentifier(email);
+        if (username == null || username.isBlank()) {
+            username = email;
+        } else {
+            username = normalizeIdentifier(username);
+        }
+    }
+
     @Override
     public Collection<? extends GrantedAuthority> getAuthorities() {
         return List.of();
@@ -148,5 +168,9 @@ public class User implements UserDetails {
     @Override
     public boolean isEnabled() {
         return true;
+    }
+
+    private String normalizeIdentifier(String value) {
+        return value == null ? null : value.trim().toLowerCase();
     }
 }
