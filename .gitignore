@@ -4,6 +4,38 @@ target/
 !**/src/main/**/target/
 !**/src/test/**/target/
 
+### Secrets & Local Config ###
+.env
+.env.*
+!.env.example
+.envrc
+*.local
+*.override
+application-local.yml
+application-local.yaml
+application-*.local.yml
+application-*.local.yaml
+*.pem
+*.key
+*.crt
+*.p12
+*.jks
+*.keystore
+
+### Local Runtime Data ###
+data/
+logs/
+*.log
+*.pid
+*.seed
+
+### Local Deploy Artifacts ###
+*.zip
+*.tar
+*.tar.gz
+*.tgz
+.deploy*/
+
 ### STS ###
 .apt_generated
 .classpath
