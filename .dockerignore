@@ -1,0 +1,9 @@
+.git
+.github
+.idea
+.vscode
+target
+Dockerfile*
+docker-compose*.yml
+README.md
+REQUIREMENTS.md

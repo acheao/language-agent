@@ -305,6 +305,10 @@ public class LlmClient {
             String systemPrompt,
             String userPrompt,
             String taskName) {
+        if (apiKey == null || apiKey.isBlank()) {
+            throw new LlmApiException("LLM_API_KEY is not configured");
+        }
+
         Map<String, Object> requestBody = Map.of(
                 "model", model,
                 "messages", List.of(
