@@ -2,14 +2,14 @@ package com.acheao.languageagent.dto.res;
 
 public class AuthRes {
     private String token;
-    private String username;
+    private UserProfileRes user;
 
     public AuthRes() {
     }
 
-    public AuthRes(String token, String username) {
+    public AuthRes(String token, UserProfileRes user) {
         this.token = token;
-        this.username = username;
+        this.user = user;
     }
 
     public String getToken() {
@@ -20,11 +20,11 @@ public class AuthRes {
         this.token = token;
     }
 
-    public String getUsername() {
-        return username;
+    public UserProfileRes getUser() {
+        return user;
     }
 
-    public void setUsername(String username) {
-        this.username = username;
+    public void setUser(UserProfileRes user) {
+        this.user = user;
     }
 }

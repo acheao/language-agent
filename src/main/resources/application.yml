@@ -17,6 +17,16 @@ spring:
 
 
 
+jwt:
+  secret: ${JWT_SECRET:}
+  expiration-ms: ${JWT_EXPIRATION_MS:86400000}
+
+app:
+  settings-encryption-key: ${SETTINGS_ENCRYPTION_KEY:}
+  media-storage-root: ${MEDIA_STORAGE_ROOT:./data/media}
+  ytdlp-bin: ${YTDLP_BIN:yt-dlp}
+  asr-service-url: ${ASR_SERVICE_URL:}
+
 llm:
   base-url: ${LLM_BASE_URL:https://api.siliconflow.cn/v1}
   api-key: ${LLM_API_KEY:}

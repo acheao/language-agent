@@ -1,13 +1,19 @@
 package com.acheao.languageagent.controller;
 
+import com.acheao.languageagent.domain.entity.User;
 import com.acheao.languageagent.dto.req.LoginReq;
 import com.acheao.languageagent.dto.req.RegisterReq;
+import com.acheao.languageagent.dto.req.UpdateProfileReq;
 import com.acheao.languageagent.dto.res.AuthRes;
+import com.acheao.languageagent.dto.res.UserProfileRes;
 import com.acheao.languageagent.exception.Result;
 import com.acheao.languageagent.service.AuthService;
 import io.swagger.v3.oas.annotations.Operation;
 import io.swagger.v3.oas.annotations.tags.Tag;
 import jakarta.validation.Valid;
+import org.springframework.security.core.annotation.AuthenticationPrincipal;
+import org.springframework.web.bind.annotation.GetMapping;
+import org.springframework.web.bind.annotation.PatchMapping;
 import org.springframework.web.bind.annotation.PostMapping;
 import org.springframework.web.bind.annotation.RequestBody;
 import org.springframework.web.bind.annotation.RequestMapping;
@@ -34,5 +40,19 @@ public class AuthController {
     @Operation(summary = "Login an existing user")
     public Result<AuthRes> login(@Valid @RequestBody LoginReq request) {
         return Result.success(authService.login(request));
+    }
+
+    @GetMapping("/me")
+    @Operation(summary = "Get current user profile")
+    public Result<UserProfileRes> me(@AuthenticationPrincipal User user) {
+        return Result.success(authService.me(user));
+    }
+
+    @PatchMapping("/profile")
+    @Operation(summary = "Update current user profile")
+    public Result<UserProfileRes> updateProfile(
+            @AuthenticationPrincipal User user,
+            @Valid @RequestBody UpdateProfileReq request) {
+        return Result.success(authService.updateProfile(user, request));
     }
 }

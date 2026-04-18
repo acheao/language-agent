@@ -1,39 +1,20 @@
 package com.acheao.languageagent.dto.req;
 
-import jakarta.validation.constraints.Email;
 import jakarta.validation.constraints.Max;
 import jakarta.validation.constraints.Min;
-import jakarta.validation.constraints.NotBlank;
 import jakarta.validation.constraints.Size;
 
-public class RegisterReq {
-    @Email(message = "Email format is invalid")
-    @NotBlank(message = "Email cannot be blank")
-    @Size(max = 120, message = "Email must be shorter than 120 characters")
-    private String email;
-
+public class UpdateProfileReq {
     @Size(max = 80, message = "Display name must be shorter than 80 characters")
     private String displayName;
 
-    @NotBlank(message = "Password cannot be blank")
-    @Size(min = 6, max = 100, message = "Password must be at least 6 characters")
-    private String password;
-
     @Min(value = 10, message = "Daily goal minutes must be between 10 and 180")
     @Max(value = 180, message = "Daily goal minutes must be between 10 and 180")
-    private Integer dailyGoalMinutes = 30;
+    private Integer dailyGoalMinutes;
 
     @Min(value = 0, message = "IELTS target score must be between 0 and 9")
     @Max(value = 9, message = "IELTS target score must be between 0 and 9")
     private Double targetIeltsScore;
-
-    public String getEmail() {
-        return email;
-    }
-
-    public void setEmail(String email) {
-        this.email = email;
-    }
 
     public String getDisplayName() {
         return displayName;
@@ -41,14 +22,6 @@ public class RegisterReq {
 
     public void setDisplayName(String displayName) {
         this.displayName = displayName;
-    }
-
-    public String getPassword() {
-        return password;
-    }
-
-    public void setPassword(String password) {
-        this.password = password;
     }
 
     public Integer getDailyGoalMinutes() {

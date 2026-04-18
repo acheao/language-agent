@@ -1,18 +1,18 @@
 package com.acheao.languageagent.controller;
 
+import com.acheao.languageagent.domain.entity.User;
+import com.acheao.languageagent.exception.Result;
 import com.acheao.languageagent.service.StatsService;
-import io.swagger.v3.oas.annotations.Operation;
-import io.swagger.v3.oas.annotations.tags.Tag;
-import org.springframework.http.ResponseEntity;
+import org.springframework.security.core.annotation.AuthenticationPrincipal;
 import org.springframework.web.bind.annotation.GetMapping;
+import org.springframework.web.bind.annotation.RequestParam;
 import org.springframework.web.bind.annotation.RequestMapping;
 import org.springframework.web.bind.annotation.RestController;
 
-import java.util.Map;
+import java.util.List;
 
 @RestController
 @RequestMapping("/api/stats")
-@Tag(name = "Statistics", description = "Endpoints for viewing learning progress")
 public class StatsController {
 
     private final StatsService statsService;
@@ -22,18 +22,14 @@ public class StatsController {
     }
 
     @GetMapping("/overview")
-    @Operation(summary = "Get overview statistics", description = "Returns high-level training counts")
-    public ResponseEntity<Map<String, Object>> getOverview() {
-        return ResponseEntity.ok(statsService.getOverview());
+    public Result<StatsService.OverviewView> getOverview(@AuthenticationPrincipal User user) {
+        return Result.success(statsService.getOverview(user));
     }
 
     @GetMapping("/error-types")
-    @Operation(summary = "Get error type statistics", description = "Returns frequency matrix for specific errors (MVP static placeholder)")
-    public ResponseEntity<Map<String, Object>> getErrorTypes() {
-        // Mock error frequency distribution
-        return ResponseEntity.ok(Map.of(
-                "grammar_mistakes", 14,
-                "spelling", 5,
-                "vocab_choice", 23));
+    public Result<List<StatsService.ErrorTypeStatView>> getErrorTypes(
+            @AuthenticationPrincipal User user,
+            @RequestParam(defaultValue = "7d") String range) {
+        return Result.success(statsService.getErrorTypes(user, range));
     }
 }
