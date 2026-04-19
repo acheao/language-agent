@@ -19,6 +19,18 @@ services:
     networks:
       - agent-network
 
+  media-init:
+    image: alpine:3.22
+    container_name: language-agent-media-init
+    command:
+      - sh
+      - -c
+      - mkdir -p /media && chown -R 100:101 /media && chmod -R ug+rwX /media
+    volumes:
+      - ./data/media:/media
+    networks:
+      - agent-network
+
   app:
     build:
       context: .
@@ -29,15 +41,17 @@ services:
     depends_on:
       postgres:
         condition: service_healthy
+      media-init:
+        condition: service_completed_successfully
     environment:
       - SPRING_DATASOURCE_URL=jdbc:postgresql://postgres:5432/language_agent
       - SPRING_DATASOURCE_USERNAME=postgres
       - SPRING_DATASOURCE_PASSWORD=postgres
-      - JWT_SECRET=${JWT_SECRET:}
+      - JWT_SECRET=${JWT_SECRET:-}
       - JWT_EXPIRATION_MS=${JWT_EXPIRATION_MS:-86400000}
-      - SETTINGS_ENCRYPTION_KEY=${SETTINGS_ENCRYPTION_KEY:}
+      - SETTINGS_ENCRYPTION_KEY=${SETTINGS_ENCRYPTION_KEY:-}
       - LLM_BASE_URL=${LLM_BASE_URL:-https://api.siliconflow.cn/v1}
-      - LLM_API_KEY=${LLM_API_KEY:}
+      - LLM_API_KEY=${LLM_API_KEY:-}
       - LLM_MODEL=${LLM_MODEL:-Pro/deepseek-ai/DeepSeek-V3}
       - LLM_DEEPSEEK_MODEL=${LLM_DEEPSEEK_MODEL:-${LLM_MODEL:-Pro/deepseek-ai/DeepSeek-V3}}
       - LLM_TRANSLATION_MODEL=${LLM_TRANSLATION_MODEL:-tencent/Hunyuan-MT-7B}
@@ -48,7 +62,9 @@ services:
     volumes:
       - ./data/media:/app/data/media
     healthcheck:
-      test: ["CMD", "wget", "--no-verbose", "--tries=1", "--spider", "http://localhost:8080/v3/api-docs"]
+      test:
+        - CMD-SHELL
+        - unset HTTP_PROXY HTTPS_PROXY ALL_PROXY http_proxy https_proxy all_proxy NO_PROXY no_proxy; wget --no-verbose --tries=1 --spider http://localhost:8080/v3/api-docs
       interval: 30s
       timeout: 5s
       retries: 3

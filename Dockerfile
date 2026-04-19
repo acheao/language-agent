@@ -17,6 +17,8 @@ RUN mvn clean package -DskipTests
 FROM eclipse-temurin:21-jre-alpine
 WORKDIR /app
 
+RUN apk add --no-cache ffmpeg yt-dlp
+
 # Add a non-root user for security
 RUN addgroup -S spring && adduser -S spring -G spring
 USER spring:spring
