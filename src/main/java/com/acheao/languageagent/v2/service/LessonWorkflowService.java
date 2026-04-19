@@ -117,7 +117,7 @@ public class LessonWorkflowService {
 
         try {
             YoutubeImportService.ImportedYoutubeLesson imported = youtubeImportService.importVideo(sourceUrl, lesson.getId());
-            List<SegmentSeed> segments = imported.segments().stream()
+            List<SegmentSeed> segments = TimedSentenceSegmenter.segment(imported.segments()).stream()
                     .map(segment -> new SegmentSeed(segment.orderIndex(), segment.text(), segment.startSeconds(), segment.endSeconds()))
                     .toList();
 
