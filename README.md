@@ -1,10 +1,12 @@
 # Language Agent Backend
 
+Chinese version: [README.zh-CN.md](README.zh-CN.md)
+
 `language-agent` is the backend service for the English Trainer product. It is not just a grading API. It is the business engine behind authentication, model configuration, material ingestion, daily planning, adaptive practice, grading, and progress analytics.
 
 The paired frontend repository lives at `C:\Users\Lin Chao\Documents\work\english-trainer-web`.
 
-## Product Responsibilities
+## Overview
 
 This backend supports the following user journey:
 
@@ -116,7 +118,7 @@ The current business model is centered on adaptive learning rather than a static
 ## Tech Stack
 
 - Java 21
-- Spring Boot
+- Spring Boot 3
 - Spring Security
 - Spring Data JPA
 - PostgreSQL
@@ -156,6 +158,15 @@ Default backend URL:
 
 ```text
 http://localhost:8080
+```
+
+### API documentation
+
+When the service is running, OpenAPI docs are available at:
+
+```text
+http://localhost:8080/swagger-ui.html
+http://localhost:8080/v3/api-docs
 ```
 
 ## Current Refactor Focus
