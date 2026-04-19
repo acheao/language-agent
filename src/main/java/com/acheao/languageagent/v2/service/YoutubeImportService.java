@@ -24,7 +24,7 @@ import java.util.regex.Pattern;
 public class YoutubeImportService {
 
     private static final Pattern TIMECODE_PATTERN = Pattern.compile(
-            "(\\d{2}:\\d{2}:\\d{2}\\.\\d{3})\\s+-->\\s+(\\d{2}:\\d{2}:\\d{2}\\.\\d{3})");
+            "(\\d{2}:\\d{2}:\\d{2}\\.\\d{3})\\s+-->\\s+(\\d{2}:\\d{2}:\\d{2}\\.\\d{3})(?:\\s+.*)?");
 
     @Value("${app.ytdlp-bin:yt-dlp}")
     private String ytdlpBin;
@@ -112,48 +112,131 @@ public class YoutubeImportService {
     }
 
     private List<TranscriptSegment> parseVttSegments(Path subtitleFile) throws Exception {
-        List<String> lines = Files.readAllLines(subtitleFile, StandardCharsets.UTF_8);
-        List<TranscriptSegment> segments = new ArrayList<>();
+        return parseVttLines(Files.readAllLines(subtitleFile, StandardCharsets.UTF_8));
+    }
+
+    List<TranscriptSegment> parseVttLines(List<String> lines) {
+        List<CaptionCue> cues = new ArrayList<>();
         Double start = null;
         Double end = null;
         StringBuilder text = new StringBuilder();
-        int index = 0;
 
         for (String rawLine : lines) {
             String line = rawLine == null ? "" : rawLine.trim();
             Matcher matcher = TIMECODE_PATTERN.matcher(line);
             if (matcher.matches()) {
-                if (start != null && !text.toString().isBlank()) {
-                    segments.add(new TranscriptSegment(index++, start, end, cleanupSubtitleText(text.toString())));
-                    text.setLength(0);
-                }
+                appendCue(cues, start, end, text);
                 start = parseTimestamp(matcher.group(1));
                 end = parseTimestamp(matcher.group(2));
                 continue;
             }
 
             if (line.isBlank()) {
-                if (start != null && !text.toString().isBlank()) {
-                    segments.add(new TranscriptSegment(index++, start, end, cleanupSubtitleText(text.toString())));
-                    text.setLength(0);
+                if (start != null && text.length() == 0) {
+                    continue;
                 }
+                appendCue(cues, start, end, text);
                 start = null;
                 end = null;
                 continue;
             }
 
-            if (!line.startsWith("WEBVTT") && !line.matches("^\\d+$")) {
-                if (text.length() > 0) {
-                    text.append(' ');
-                }
-                text.append(line);
+            if (shouldIgnoreVttLine(line, start != null)) {
+                continue;
             }
+
+            if (start == null) {
+                continue;
+            }
+
+            if (text.length() > 0) {
+                text.append(' ');
+            }
+            text.append(line);
         }
 
-        if (start != null && !text.toString().isBlank()) {
-            segments.add(new TranscriptSegment(index, start, end, cleanupSubtitleText(text.toString())));
+        appendCue(cues, start, end, text);
+        return normalizeCues(cues);
+    }
+
+    private void appendCue(List<CaptionCue> cues, Double start, Double end, StringBuilder text) {
+        if (start == null) {
+            text.setLength(0);
+            return;
         }
-        return segments.stream().filter(segment -> !segment.text().isBlank()).toList();
+
+        String cleaned = cleanupSubtitleText(text.toString());
+        text.setLength(0);
+        if (cleaned.isBlank()) {
+            return;
+        }
+        cues.add(new CaptionCue(start, end, cleaned));
+    }
+
+    private boolean shouldIgnoreVttLine(String line, boolean insideCue) {
+        if (line.startsWith("WEBVTT") || line.matches("^\\d+$")) {
+            return true;
+        }
+        if (insideCue) {
+            return false;
+        }
+        return line.startsWith("Kind:")
+                || line.startsWith("Language:")
+                || line.startsWith("NOTE")
+                || line.startsWith("STYLE")
+                || line.startsWith("REGION");
+    }
+
+    private List<TranscriptSegment> normalizeCues(List<CaptionCue> cues) {
+        List<TranscriptSegment> segments = new ArrayList<>();
+        int index = 0;
+
+        for (CaptionCue cue : cues) {
+            String text = cue.text();
+            if (!segments.isEmpty()) {
+                TranscriptSegment previous = segments.get(segments.size() - 1);
+                if (text.equals(previous.text())) {
+                    continue;
+                }
+                if (isRollingCaptionUpdate(previous, cue)) {
+                    text = text.substring(previous.text().length()).trim();
+                    if (text.isBlank()) {
+                        continue;
+                    }
+                }
+                if (isEphemeralSuffixCue(previous, cue, text)) {
+                    continue;
+                }
+            }
+
+            segments.add(new TranscriptSegment(index++, cue.startSeconds(), cue.endSeconds(), text));
+        }
+        return segments;
+    }
+
+    private boolean isRollingCaptionUpdate(TranscriptSegment previous, CaptionCue current) {
+        return previous.text().length() >= 8
+                && current.text().startsWith(previous.text())
+                && cueGap(previous.endSeconds(), current.startSeconds()) <= 0.25;
+    }
+
+    private boolean isEphemeralSuffixCue(TranscriptSegment previous, CaptionCue current, String text) {
+        return cueDuration(current.startSeconds(), current.endSeconds()) <= 0.05
+                && previous.text().endsWith(text);
+    }
+
+    private double cueGap(Double previousEnd, Double currentStart) {
+        if (previousEnd == null || currentStart == null) {
+            return Double.MAX_VALUE;
+        }
+        return Math.max(0d, currentStart - previousEnd);
+    }
+
+    private double cueDuration(Double start, Double end) {
+        if (start == null || end == null) {
+            return Double.MAX_VALUE;
+        }
+        return Math.max(0d, end - start);
     }
 
     private List<TranscriptSegment> requestAsrSegments(Path audioFile) {
@@ -216,6 +299,9 @@ public class YoutubeImportService {
     }
 
     public record TranscriptSegment(int orderIndex, Double startSeconds, Double endSeconds, String text) {
+    }
+
+    private record CaptionCue(Double startSeconds, Double endSeconds, String text) {
     }
 
     public record ImportedYoutubeLesson(
